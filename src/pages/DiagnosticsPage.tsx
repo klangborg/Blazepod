@@ -100,14 +100,20 @@ export function DiagnosticsPage() {
           <span className="badge">{transportKind === 'mock' ? 'Simuleret BLE' : 'Web Bluetooth'}</span>
           {transportKind === 'web' ? (
             <button className="btn btn-ghost" type="button" onClick={() => void useMock()}>
-              Brug simuleret pod
+              Brug simuleret pod (kun udvikling)
             </button>
           ) : (
             <button className="btn btn-ghost" type="button" onClick={() => void useWeb()}>
-              Brug Web Bluetooth
+              Brug rigtige pods (Web Bluetooth)
             </button>
           )}
         </div>
+        {transportKind === 'mock' ? (
+          <div className="banner">
+            Simulerede pods hedder &quot;BlazePod Mock&quot; og er ikke fysisk hardware. Slå Web
+            Bluetooth til for at scanne rigtige pods.
+          </div>
+        ) : null}
       </section>
 
       {error ? <div className="banner error">{error}</div> : null}

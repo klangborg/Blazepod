@@ -20,6 +20,22 @@ describe('DiagnosticsPage', () => {
     expect(screen.getByText(/Auth må ikke springes over|watchAdvertisements/i)).toBeTruthy()
   })
 
+  it('does not silently connect a mock pod when Web Bluetooth is missing', async () => {
+    render(
+      <MemoryRouter>
+        <PodProvider>
+          <DiagnosticsPage />
+        </PodProvider>
+      </MemoryRouter>,
+    )
+    await userEvent.click(screen.getByRole('button', { name: /scan og tilslut/i }))
+    expect(
+      await screen.findByText(/Åbn appen via en HTTPS-adresse|findes ikke i denne browser/i, {}, { timeout: 3000 }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/BlazePod Mock/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/Ingen pod tilsluttet/i)).toBeInTheDocument()
+  })
+
   it('can connect a simulated pod and show manufacturer data plus auth token', async () => {
     render(
       <MemoryRouter>
@@ -28,6 +44,7 @@ describe('DiagnosticsPage', () => {
         </PodProvider>
       </MemoryRouter>,
     )
+    await userEvent.click(screen.getByRole('button', { name: /simuleret pod/i }))
     await userEvent.click(screen.getByRole('button', { name: /scan og tilslut/i }))
     expect(await screen.findByText(/01 DE AD BE EF/i, {}, { timeout: 3000 })).toBeInTheDocument()
     expect(screen.getByText(/73 65 61 03 48 60 B6/i)).toBeInTheDocument()

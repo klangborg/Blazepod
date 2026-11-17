@@ -10,7 +10,6 @@ import {
 import { MockBluetoothTransport } from '../ble/MockBluetoothTransport'
 import { PodManager, type ManagedPod } from '../ble/PodManager'
 import { WebBluetoothTransport } from '../ble/WebBluetoothTransport'
-import { inspectWebBluetoothCapabilities } from '../ble/capabilities'
 import { listPodNames, savePodName } from '../storage/pods'
 
 interface PodContextValue {
@@ -33,14 +32,7 @@ interface PodContextValue {
 const PodContext = createContext<PodContextValue | null>(null)
 
 export function PodProvider({ children }: { children: ReactNode }) {
-  const [manager] = useState(() => {
-    const caps = inspectWebBluetoothCapabilities()
-    const transport =
-      caps.bluetooth && caps.requestDevice
-        ? new WebBluetoothTransport()
-        : new MockBluetoothTransport()
-    return new PodManager(transport)
-  })
+  const [manager] = useState(() => new PodManager(new WebBluetoothTransport()))
   const [pods, setPods] = useState<ManagedPod[]>([])
   const [transportKind, setTransportKind] = useState<'web' | 'mock'>(
     manager.getTransport().kind,

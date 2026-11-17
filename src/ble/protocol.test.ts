@@ -3,6 +3,7 @@ import {
   AUTH_PREFIX,
   buildAuthToken,
   crc32LsbFirst,
+  decodeAdvertisedBattery,
   decodeTap,
   encodeColor,
   encodeOff,
@@ -30,6 +31,16 @@ describe('auth protocol', () => {
     const input = extractAuthInput(padded)
     expect(input.offset).toBe(0x01)
     expect(toHex(input.crcInput)).toBe('DE AD BE EF')
+  })
+
+  it('reads battery from the extra advertisement byte before the auth trailer', () => {
+    expect(decodeAdvertisedBattery(fromHex('5A 01 DE AD BE EF'))).toBe(90)
+    expect(decodeAdvertisedBattery(fromHex('00 01 DE AD BE EF'))).toBe(0)
+    expect(decodeAdvertisedBattery(fromHex('64 01 DE AD BE EF'))).toBe(100)
+    expect(decodeAdvertisedBattery(KNOWN_EXAMPLE.manufacturerData)).toBeNull()
+    expect(decodeAdvertisedBattery(fromHex('65 01 DE AD BE EF'))).toBeNull()
+    expect(decodeAdvertisedBattery(fromHex('AA BB 01 DE AD BE EF'))).toBeNull()
+    expect(decodeAdvertisedBattery(fromHex('5A AA BB 01 DE AD BE EF'))).toBe(90)
   })
 
   it('wraps CRC as unsigned 32-bit', () => {

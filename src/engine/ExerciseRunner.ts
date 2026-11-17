@@ -1,9 +1,25 @@
-import { colorRgb, type ColorName } from '../domain/colors'
-import { timeoutOf, type Exercise } from '../domain/exercises'
-import { deriveResult, type SessionEvent, type SessionResult } from '../domain/results'
+import { COLOR_ORDER, colorRgb, type ColorName } from '../domain/colors'
+import { isDuelExercise, timeoutOf, type Exercise } from '../domain/exercises'
+import {
+  deriveResult,
+  scoresByColor,
+  winningColor,
+  type ColorScore,
+  type SessionEvent,
+  type SessionResult,
+} from '../domain/results'
 import type { LightsController } from '../ble/transport'
 import type { TapNotification } from '../ble/protocol'
 import { createSeed, mulberry32, pickIndex, randomInt } from './random'
+
+export const DUEL_CELEBRATE_ON_MS = 300
+export const DUEL_CELEBRATE_OFF_MS = 180
+export const DUEL_CELEBRATE_CYCLES = 4
+
+export function duelCelebrateDurationMs(tie: boolean): number {
+  if (tie) return DUEL_CELEBRATE_CYCLES * 2 * DUEL_CELEBRATE_ON_MS
+  return DUEL_CELEBRATE_CYCLES * (DUEL_CELEBRATE_ON_MS + DUEL_CELEBRATE_OFF_MS)
+}
 
 export type RunnerStatus =
   | 'idle'
@@ -11,6 +27,7 @@ export type RunnerStatus =
   | 'cueing'
   | 'resting'
   | 'paused'
+  | 'celebrating'
   | 'stopped'
   | 'completed'
 
@@ -47,6 +64,8 @@ export class ExerciseRunner {
   private readonly availablePods: Set<string>
   private readonly listeners = new Set<() => void>()
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
+  private readonly cueTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private roundTimer: ReturnType<typeof setTimeout> | null = null
 
   private events: SessionEvent[] = []
   private status: RunnerStatus = 'idle'
@@ -63,6 +82,10 @@ export class ExerciseRunner {
   private colorBag: ColorName[] = []
   private pauseReason: string | null = null
   private pendingAfterPause: 'delay' | 'rest' | null = null
+  private duelChain: Promise<void> = Promise.resolve()
+  private delayResolvers = new Set<() => void>()
+  private stopping = false
+  private celebrateColor: ColorName | null = null
 
   constructor(
     exercise: Exercise,
@@ -118,9 +141,24 @@ export class ExerciseRunner {
     return this.events.filter((event) => event.type === 'miss').length
   }
 
+  getLiveColorScores(): ColorScore[] {
+    return scoresByColor(this.events)
+  }
+
   elapsedMs(): number {
     if (!this.sessionStartedAt) return 0
     return Math.max(0, this.nowFn() - this.sessionStartedAt)
+  }
+
+  remainingRoundMs(): number {
+    if (!this.roundStartedAt) return 0
+    const stop = this.exercise.stop
+    if (stop.mode !== 'time') return 0
+    return Math.max(0, stop.durationMs - (this.nowFn() - this.roundStartedAt))
+  }
+
+  getCelebrateColor(): ColorName | null {
+    return this.status === 'celebrating' ? this.celebrateColor : null
   }
 
   async start(): Promise<void> {
@@ -138,6 +176,8 @@ export class ExerciseRunner {
       }
       return
     }
+    this.stopping = true
+    this.celebrateColor = null
     this.clearTimers()
     await this.abortActiveCues(reason === 'complete' ? 'round-end' : 'stop')
     await this.safeLightsOffAll()
@@ -181,6 +221,7 @@ export class ExerciseRunner {
     }
 
     this.activeCues.delete(podId)
+    this.clearCueTimer(cue.cueId)
     this.hitsThisRound += 1
     this.push({
       type: 'hit',
@@ -196,6 +237,11 @@ export class ExerciseRunner {
     if (this.stopReached()) {
       await this.abortActiveCues('round-end')
       await this.finishRound()
+      return
+    }
+
+    if (this.isDuel()) {
+      await this.enqueueDuel(() => this.relocateDuelCue(cue.color, podId))
       return
     }
 
@@ -273,6 +319,11 @@ export class ExerciseRunner {
       return
     }
 
+    if (this.isDuel()) {
+      await this.issueDuelCues()
+      return
+    }
+
     const picks = this.pickCueSet()
     if (picks.length === 0) {
       this.status = 'paused'
@@ -333,6 +384,12 @@ export class ExerciseRunner {
     this.clearTimers()
     await this.abortActiveCues('round-end')
     if (this.round >= this.exercise.rounds) {
+      if (this.isDuel()) {
+        await this.celebrateDuel()
+      }
+      if (this.stopping || this.status === 'stopped' || this.status === 'completed') {
+        return
+      }
       await this.stop('complete')
       return
     }
@@ -369,6 +426,224 @@ export class ExerciseRunner {
     const delay = this.exercise.delay
     if (delay.mode === 'fixed') return delay.ms
     return randomInt(this.rng, delay.minMs, delay.maxMs)
+  }
+
+  private isDuel(): boolean {
+    return isDuelExercise(this.exercise)
+  }
+
+  private enqueueDuel(task: () => Promise<void>): Promise<void> {
+    const run = this.duelChain.then(task, task)
+    this.duelChain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async issueDuelCues(): Promise<void> {
+    const colors = this.exercise.colors.slice(0, 2)
+    const used = new Set(this.activeCues.keys())
+    const activeColors = new Set([...this.activeCues.values()].map((cue) => cue.color))
+    for (const color of colors) {
+      if (activeColors.has(color)) continue
+      const podId = this.pickDuelPod(used)
+      if (!podId) {
+        this.status = 'paused'
+        this.pauseReason = 'Ingen tilgængelige pods til cue'
+        this.pendingAfterPause = 'delay'
+        this.push({ type: 'pause', at: this.nowFn(), reason: this.pauseReason })
+        return
+      }
+      used.add(podId)
+      await this.lightDuelCue(podId, color)
+    }
+    this.scheduleDuelRoundTimer()
+  }
+
+  private async lightDuelCue(podId: string, color: ColorName): Promise<void> {
+    if (this.status === 'stopped' || this.status === 'completed' || this.status === 'paused') {
+      return
+    }
+    this.status = 'cueing'
+    const at = this.nowFn()
+    const cueId = `${this.round}-${this.cueSeq++}-${podId}`
+    this.activeCues.set(podId, {
+      cueId,
+      podId,
+      color,
+      at,
+      round: this.round,
+    })
+    this.push({
+      type: 'cue',
+      at,
+      round: this.round,
+      podId,
+      color,
+      cueId,
+    })
+    await this.safeSetColor(podId, color)
+    const timeoutMs = timeoutOf(this.exercise.cueEnd)
+    if (timeoutMs !== null) {
+      const timer = setTimeout(() => {
+        this.cueTimers.delete(cueId)
+        void this.handleDuelTimeout(cueId)
+      }, timeoutMs)
+      this.cueTimers.set(cueId, timer)
+    }
+  }
+
+  private async handleDuelTimeout(cueId: string): Promise<void> {
+    await this.enqueueDuel(async () => {
+      if (this.status !== 'cueing') return
+      if (this.stopReached()) {
+        await this.finishRound()
+        return
+      }
+      const cue = [...this.activeCues.values()].find((item) => item.cueId === cueId)
+      if (!cue) return
+      this.activeCues.delete(cue.podId)
+      this.push({
+        type: 'miss',
+        at: this.nowFn(),
+        round: cue.round,
+        podId: cue.podId,
+        cueId: cue.cueId,
+      })
+      await this.safeLightsOff(cue.podId)
+      if (this.stopReached()) {
+        await this.finishRound()
+        return
+      }
+      await this.relocateDuelCue(cue.color, cue.podId)
+    })
+  }
+
+  private async relocateDuelCue(color: ColorName, fromPodId: string): Promise<void> {
+    if (this.status === 'stopped' || this.status === 'completed' || this.status === 'paused') {
+      return
+    }
+    if (this.stopReached()) {
+      await this.finishRound()
+      return
+    }
+    const podId = this.pickDuelPod(new Set(), fromPodId)
+    if (!podId) {
+      this.status = 'paused'
+      this.pauseReason = 'Ingen tilgængelige pods til cue'
+      this.pendingAfterPause = 'delay'
+      this.push({ type: 'pause', at: this.nowFn(), reason: this.pauseReason })
+      return
+    }
+    await this.lightDuelCue(podId, color)
+  }
+
+  private pickDuelPod(exclude: Set<string>, justLeft?: string): string | undefined {
+    const lit = new Set(this.activeCues.keys())
+    const live = this.liveDuelPods().filter(
+      (podId) => !lit.has(podId) && !exclude.has(podId),
+    )
+    if (live.length === 0) return undefined
+    const preferred = justLeft ? live.filter((podId) => podId !== justLeft) : live
+    const pool = preferred.length > 0 ? preferred : live
+    return pool[pickIndex(this.rng, pool.length)]
+  }
+
+  private liveDuelPods(): string[] {
+    return [...this.availablePods].filter((podId) =>
+      this.assignments.some((group) => group.podIds.includes(podId)),
+    )
+  }
+
+  private async celebrateDuel(): Promise<void> {
+    if (this.stopping) return
+    this.status = 'celebrating'
+    this.emit()
+    const winner = this.duelWinnerColor()
+    const colors = this.exercise.colors.slice(0, 2)
+    for (let cycle = 0; cycle < DUEL_CELEBRATE_CYCLES; cycle++) {
+      if (!this.stillCelebrating()) return
+      if (winner) {
+        await this.showCelebrateColor(winner)
+        await this.delay(DUEL_CELEBRATE_ON_MS)
+        if (!this.stillCelebrating()) return
+        await this.hideCelebrateColor()
+        await this.delay(DUEL_CELEBRATE_OFF_MS)
+      } else {
+        const first = colors[0]
+        const second = colors[1]
+        if (first) {
+          await this.showCelebrateColor(first)
+          await this.delay(DUEL_CELEBRATE_ON_MS)
+        }
+        if (!this.stillCelebrating()) return
+        if (second) {
+          await this.showCelebrateColor(second)
+          await this.delay(DUEL_CELEBRATE_ON_MS)
+        }
+      }
+    }
+    if (winner && this.stillCelebrating()) {
+      await this.showCelebrateColor(winner)
+    }
+  }
+
+  private duelWinnerColor(): ColorName | null {
+    const winner = winningColor(this.getLiveColorScores())
+    if (!winner || !COLOR_ORDER.includes(winner as ColorName)) return null
+    return winner as ColorName
+  }
+
+  private stillCelebrating(): boolean {
+    return this.status === 'celebrating' && !this.stopping
+  }
+
+  private async showCelebrateColor(color: ColorName): Promise<void> {
+    this.celebrateColor = color
+    this.emit()
+    await Promise.all(this.liveDuelPods().map((podId) => this.safeSetColor(podId, color)))
+  }
+
+  private async hideCelebrateColor(): Promise<void> {
+    this.celebrateColor = null
+    this.emit()
+    await Promise.all(this.liveDuelPods().map((podId) => this.safeLightsOff(podId)))
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false
+      const done = () => {
+        if (settled) return
+        settled = true
+        this.delayResolvers.delete(done)
+        resolve()
+      }
+      this.delayResolvers.add(done)
+      this.wait(ms, done)
+    })
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) listener()
+  }
+
+  private scheduleDuelRoundTimer(): void {
+    const stop = this.exercise.stop
+    if (stop.mode !== 'time') return
+    const remaining = stop.durationMs - (this.nowFn() - this.roundStartedAt)
+    if (remaining <= 0) {
+      void this.finishRound()
+      return
+    }
+    if (this.roundTimer !== null) {
+      clearTimeout(this.roundTimer)
+    }
+    this.roundTimer = setTimeout(() => {
+      this.roundTimer = null
+      void this.enqueueDuel(() => this.finishRound())
+    }, remaining)
   }
 
   private pickCueSet(): { podId: string; color: ColorName }[] {
@@ -522,9 +797,24 @@ export class ExerciseRunner {
     this.timers.add(timer)
   }
 
+  private clearCueTimer(cueId: string): void {
+    const timer = this.cueTimers.get(cueId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.cueTimers.delete(cueId)
+  }
+
   private clearTimers(): void {
     for (const timer of this.timers) clearTimeout(timer)
     this.timers.clear()
+    for (const timer of this.cueTimers.values()) clearTimeout(timer)
+    this.cueTimers.clear()
+    if (this.roundTimer !== null) {
+      clearTimeout(this.roundTimer)
+      this.roundTimer = null
+    }
+    for (const done of this.delayResolvers) done()
+    this.delayResolvers.clear()
   }
 
   private push(event: SessionEvent): void {

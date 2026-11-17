@@ -1,14 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createExercise } from '../domain/exercises'
+import { colorRgb } from '../domain/colors'
 import type { LightsController } from '../ble/transport'
 import type { TapNotification } from '../ble/protocol'
 import { TapState } from '../ble/protocol'
-import { ExerciseRunner } from './ExerciseRunner'
+import { duelCelebrateDurationMs, ExerciseRunner } from './ExerciseRunner'
 
 class FakeLights implements LightsController {
   on = new Set<string>()
-  async setColor(podId: string): Promise<void> {
+  writes: { podId: string; rgb: { r: number; g: number; b: number } }[] = []
+  async setColor(
+    podId: string,
+    rgb: { r: number; g: number; b: number } = { r: 0, g: 0, b: 0 },
+  ): Promise<void> {
     this.on.add(podId)
+    this.writes.push({ podId, rgb })
   }
   async lightsOff(podId: string): Promise<void> {
     this.on.delete(podId)
@@ -229,4 +235,177 @@ describe('ExerciseRunner', () => {
     await vi.advanceTimersByTimeAsync(300)
     expect(runner.getRound()).toBe(2)
   })
+
+  it('lights one pod per duel color at the same time', async () => {
+    const exercise = createExercise({
+      name: 'Duel',
+      kind: 'duel',
+      podCount: 4,
+      colors: ['blue', 'red'],
+      cueEnd: { mode: 'tap-or-timeout', timeoutMs: 2000 },
+      stop: { mode: 'time', durationMs: 5000 },
+    })
+    const runner = new ExerciseRunner(
+      exercise,
+      [{ groupId: 'g', podIds: ['p1', 'p2', 'p3', 'p4'] }],
+      { lights, seed: 11 },
+    )
+    await runner.start()
+    const cues = runner.getActiveCues()
+    expect(cues).toHaveLength(2)
+    expect(new Set(cues.map((cue) => cue.podId)).size).toBe(2)
+    expect(new Set(cues.map((cue) => cue.color))).toEqual(new Set(['blue', 'red']))
+  })
+
+  it('moves only the tapped duel color to another pod', async () => {
+    const exercise = createExercise({
+      name: 'Duel',
+      kind: 'duel',
+      podCount: 4,
+      colors: ['blue', 'red'],
+      cueEnd: { mode: 'tap-or-timeout', timeoutMs: 2000 },
+      stop: { mode: 'time', durationMs: 5000 },
+    })
+    const runner = new ExerciseRunner(
+      exercise,
+      [{ groupId: 'g', podIds: ['p1', 'p2', 'p3', 'p4'] }],
+      { lights, seed: 12 },
+    )
+    await runner.start()
+    const blue = runner.getActiveCues().find((cue) => cue.color === 'blue')
+    const red = runner.getActiveCues().find((cue) => cue.color === 'red')
+    expect(blue).toBeTruthy()
+    expect(red).toBeTruthy()
+    await runner.handleTap(blue!.podId, litTap(120))
+    const after = runner.getActiveCues()
+    expect(after).toHaveLength(2)
+    expect(after.find((cue) => cue.podId === red!.podId)?.color).toBe('red')
+    expect(after.some((cue) => cue.color === 'blue' && cue.podId !== blue!.podId)).toBe(true)
+    expect(after.some((cue) => cue.podId === blue!.podId)).toBe(false)
+    expect(lights.on.has(red!.podId)).toBe(true)
+    expect(lights.on.has(blue!.podId)).toBe(false)
+    expect(runner.getLiveHits()).toBe(1)
+    expect(runner.getLiveColorScores().find((score) => score.color === 'blue')?.hits).toBe(1)
+  })
+
+  it('times out only one duel color and relocates that light', async () => {
+    const exercise = createExercise({
+      name: 'Duel',
+      kind: 'duel',
+      podCount: 4,
+      colors: ['blue', 'red'],
+      cueEnd: { mode: 'tap-or-timeout', timeoutMs: 200 },
+      stop: { mode: 'time', durationMs: 5000 },
+    })
+    const runner = new ExerciseRunner(
+      exercise,
+      [{ groupId: 'g', podIds: ['p1', 'p2', 'p3', 'p4'] }],
+      { lights, seed: 13 },
+    )
+    await runner.start()
+    await vi.advanceTimersByTimeAsync(50)
+    const blue = runner.getActiveCues().find((cue) => cue.color === 'blue')
+    const red = runner.getActiveCues().find((cue) => cue.color === 'red')
+    expect(blue).toBeTruthy()
+    expect(red).toBeTruthy()
+    await runner.handleTap(blue!.podId, litTap(50))
+    const blueAfterHit = runner.getActiveCues().find((cue) => cue.color === 'blue')
+    expect(blueAfterHit).toBeTruthy()
+    await vi.advanceTimersByTimeAsync(150)
+    expect(runner.getLiveMisses()).toBe(1)
+    expect(runner.getLiveColorScores().find((score) => score.color === 'red')?.misses).toBe(1)
+    const after = runner.getActiveCues()
+    expect(after.find((cue) => cue.color === 'blue')?.podId).toBe(blueAfterHit!.podId)
+    expect(after.find((cue) => cue.color === 'red')?.podId).not.toBe(red!.podId)
+    expect(lights.on.has(blueAfterHit!.podId)).toBe(true)
+  })
+
+  it('aborts remaining duel cues at round end without scoring misses', async () => {
+    const exercise = createExercise({
+      name: 'Duel',
+      kind: 'duel',
+      podCount: 4,
+      colors: ['blue', 'red'],
+      cueEnd: { mode: 'tap-or-timeout', timeoutMs: 5000 },
+      stop: { mode: 'time', durationMs: 300 },
+    })
+    const runner = new ExerciseRunner(
+      exercise,
+      [{ groupId: 'g', podIds: ['p1', 'p2', 'p3', 'p4'] }],
+      { lights, seed: 14 },
+    )
+    await runner.start()
+    expect(runner.getActiveCues()).toHaveLength(2)
+    await vi.advanceTimersByTimeAsync(300)
+    expect(runner.getStatus()).toBe('celebrating')
+    expect(runner.getLiveMisses()).toBe(0)
+    expect(
+      runner.getEvents().filter((event) => event.type === 'cue-aborted' && event.reason === 'round-end')
+        .length,
+    ).toBe(2)
+    await vi.advanceTimersByTimeAsync(duelCelebrateDurationMs(true) + 20)
+    expect(runner.getStatus()).toBe('completed')
+  })
+
+  it('blinks every duel pod in the winning color', async () => {
+    const exercise = createExercise({
+      name: 'Duel',
+      kind: 'duel',
+      podCount: 4,
+      colors: ['blue', 'red'],
+      cueEnd: { mode: 'tap-or-timeout', timeoutMs: 5000 },
+      stop: { mode: 'time', durationMs: 250 },
+    })
+    const runner = new ExerciseRunner(
+      exercise,
+      [{ groupId: 'g', podIds: ['p1', 'p2', 'p3', 'p4'] }],
+      { lights, seed: 15 },
+    )
+    await runner.start()
+    const blue = runner.getActiveCues().find((cue) => cue.color === 'blue')
+    expect(blue).toBeTruthy()
+    await runner.handleTap(blue!.podId, litTap(40))
+    const before = lights.writes.length
+    await vi.advanceTimersByTimeAsync(250)
+    expect(runner.getStatus()).toBe('celebrating')
+    await vi.advanceTimersByTimeAsync(duelCelebrateDurationMs(false) + 20)
+    expect(runner.getStatus()).toBe('completed')
+    const celebration = lights.writes.slice(before)
+    const blueRgb = colorRgb('blue')
+    expect(celebration.length).toBeGreaterThan(0)
+    expect(celebration.every((write) => sameRgb(write.rgb, blueRgb))).toBe(true)
+    expect(new Set(celebration.map((write) => write.podId))).toEqual(new Set(['p1', 'p2', 'p3', 'p4']))
+  })
+
+  it('blinks alternating colors when the duel is tied', async () => {
+    const exercise = createExercise({
+      name: 'Duel',
+      kind: 'duel',
+      podCount: 4,
+      colors: ['blue', 'red'],
+      cueEnd: { mode: 'tap-or-timeout', timeoutMs: 5000 },
+      stop: { mode: 'time', durationMs: 250 },
+    })
+    const runner = new ExerciseRunner(
+      exercise,
+      [{ groupId: 'g', podIds: ['p1', 'p2', 'p3', 'p4'] }],
+      { lights, seed: 16 },
+    )
+    await runner.start()
+    const before = lights.writes.length
+    await vi.advanceTimersByTimeAsync(250)
+    expect(runner.getStatus()).toBe('celebrating')
+    await vi.advanceTimersByTimeAsync(duelCelebrateDurationMs(true) + 20)
+    expect(runner.getStatus()).toBe('completed')
+    const celebration = lights.writes.slice(before)
+    expect(celebration.some((write) => sameRgb(write.rgb, colorRgb('blue')))).toBe(true)
+    expect(celebration.some((write) => sameRgb(write.rgb, colorRgb('red')))).toBe(true)
+  })
 })
+
+function sameRgb(
+  actual: { r: number; g: number; b: number },
+  expected: { r: number; g: number; b: number },
+): boolean {
+  return actual.r === expected.r && actual.g === expected.g && actual.b === expected.b
+}

@@ -12,6 +12,7 @@ import {
 } from '../ble/protocol'
 import { encodeMockTap, MockBluetoothTransport } from '../ble/MockBluetoothTransport'
 import { colorRgb } from '../domain/colors'
+import { BatteryMeter } from '../components/BatteryMeter'
 
 export function DiagnosticsPage() {
   const {
@@ -133,6 +134,7 @@ export function DiagnosticsPage() {
         <section className="card stack">
           <h2>{pod.givenName}</h2>
           <div className="muted">Status: {pod.status}</div>
+          <BatteryMeter manufacturerData={pod.manufacturerData} />
           <div>
             <div className="muted">Manufacturer data</div>
             <div className="mono">{formatHex(pod.manufacturerData)}</div>

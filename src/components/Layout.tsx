@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { usePods } from '../app/PodContext'
 import { BrandMark } from './BrandMark'
@@ -5,10 +6,16 @@ import { BrandMark } from './BrandMark'
 export function Layout() {
   const { connected, lightsOffAll, transportKind } = usePods()
   const location = useLocation()
+  const scrollRef = useRef<HTMLDivElement>(null)
   const hideNav = location.pathname.startsWith('/session')
+  const showEmergency = connected.length > 0 && !hideNav
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo(0, 0)
+  }, [location.pathname])
 
   return (
-    <div className={hideNav ? 'hidden-nav' : undefined}>
+    <div className={hideNav ? 'app-frame hidden-nav' : 'app-frame'}>
       <header className="topbar">
         <div className="brand">
           <BrandMark className="brand-mark" />
@@ -21,9 +28,11 @@ export function Layout() {
           {transportKind === 'mock' ? ' · mock' : ''}
         </div>
       </header>
-      <Outlet />
-      {connected.length > 0 && !hideNav ? (
-        <div className="page emergency">
+      <div className="app-scroll" ref={scrollRef}>
+        <Outlet />
+      </div>
+      {showEmergency ? (
+        <div className="emergency">
           <button className="btn btn-danger btn-block" type="button" onClick={() => void lightsOffAll()}>
             Sluk alle lys
           </button>

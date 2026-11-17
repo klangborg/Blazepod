@@ -66,6 +66,14 @@ export interface SessionResult {
   durationMs: number
 }
 
+export interface ColorScore {
+  color: string
+  hits: number
+  misses: number
+  bestReactionMs: number | null
+  avgReactionMs: number | null
+}
+
 export interface SessionRecord {
   id: string
   exerciseId: string
@@ -136,4 +144,52 @@ export function deriveResult(events: SessionEvent[]): SessionResult {
     rounds,
     durationMs,
   }
+}
+
+export function scoresByColor(events: SessionEvent[]): ColorScore[] {
+  const colorByCueId = new Map<string, string>()
+  const order: string[] = []
+  for (const event of events) {
+    if (event.type !== 'cue') continue
+    colorByCueId.set(event.cueId, event.color)
+    if (!order.includes(event.color)) order.push(event.color)
+  }
+
+  const stats = new Map<string, { hits: number[]; misses: number }>()
+  for (const color of order) {
+    stats.set(color, { hits: [], misses: 0 })
+  }
+
+  for (const event of events) {
+    if (event.type === 'hit') {
+      const color = colorByCueId.get(event.cueId)
+      const entry = color ? stats.get(color) : undefined
+      entry?.hits.push(event.reactionMs)
+    } else if (event.type === 'miss') {
+      const color = colorByCueId.get(event.cueId)
+      const entry = color ? stats.get(color) : undefined
+      if (entry) entry.misses += 1
+    }
+  }
+
+  return order.map((color) => {
+    const entry = stats.get(color) ?? { hits: [], misses: 0 }
+    return {
+      color,
+      hits: entry.hits.length,
+      misses: entry.misses,
+      bestReactionMs: best(entry.hits),
+      avgReactionMs: avg(entry.hits),
+    }
+  })
+}
+
+export function winningColor(scores: ColorScore[]): string | null {
+  if (scores.length === 0) return null
+  const ranked = [...scores].sort((a, b) => b.hits - a.hits || a.color.localeCompare(b.color))
+  const leader = ranked[0]
+  const runnerUp = ranked[1]
+  if (!leader) return null
+  if (runnerUp && runnerUp.hits === leader.hits) return null
+  return leader.color
 }

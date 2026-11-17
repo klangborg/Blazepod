@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { COLOR_ORDER, PALETTE, type ColorName } from '../domain/colors'
 import {
   createExercise,
+  isDuelExercise,
   newId,
   nowIso,
   validateExercise,
@@ -78,6 +79,10 @@ export function ExerciseEditorPage() {
         </label>
       </section>
 
+      {isDuelExercise(exercise) ? (
+        <DuelFields exercise={exercise} patch={patch} />
+      ) : (
+        <>
       <section className="card stack">
         <h2>Pods og rækkefølge</h2>
         {exercise.groups.map((group, index) => (
@@ -355,6 +360,8 @@ export function ExerciseEditorPage() {
           />
         </label>
       </section>
+        </>
+      )}
 
       <button className="btn btn-primary btn-block" type="button" onClick={() => void onSave()}>
         Gem øvelse
@@ -363,6 +370,105 @@ export function ExerciseEditorPage() {
         Annuller
       </Link>
     </main>
+  )
+}
+
+function DuelFields({
+  exercise,
+  patch,
+}: {
+  exercise: Exercise
+  patch: (partial: Partial<Exercise>) => void
+}) {
+  const timeoutMs = exercise.cueEnd.mode === 'tap' ? 2500 : exercise.cueEnd.timeoutMs
+  const durationMs = exercise.stop.mode === 'time' ? exercise.stop.durationMs : 45_000
+  const playerColors: [ColorName, ColorName] = [
+    exercise.colors[0] ?? 'blue',
+    exercise.colors[1] ?? 'red',
+  ]
+
+  function setPlayerColor(index: 0 | 1, color: ColorName): void {
+    const next: [ColorName, ColorName] = [playerColors[0], playerColors[1]]
+    const other = index === 0 ? 1 : 0
+    if (next[other] === color) next[other] = next[index]
+    next[index] = color
+    patch({ colors: next })
+  }
+
+  return (
+    <>
+      <section className="card stack">
+        <h2>Pods</h2>
+        <label className="field">
+          <span>Antal pods</span>
+          <input
+            type="number"
+            min={3}
+            max={12}
+            inputMode="numeric"
+            value={exercise.podCount ?? 4}
+            onChange={(event) => patch({ podCount: Number(event.target.value) })}
+          />
+        </label>
+      </section>
+      <section className="card stack">
+        <h2>Spillere</h2>
+        {playerColors.map((selected, index) => (
+          <div className="stack" key={index}>
+            <span className="muted">Spiller {index + 1}</span>
+            <div className="swatches">
+              {COLOR_ORDER.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  className={`swatch ${selected === name ? 'on' : ''}`}
+                  style={{ background: rgb(name) }}
+                  aria-pressed={selected === name}
+                  onClick={() => setPlayerColor(index as 0 | 1, name)}
+                >
+                  {selected === name ? '✓' : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+      <section className="card stack">
+        <h2>Tid</h2>
+        <label className="field">
+          <span>Tid hver pod lyser (sekunder)</span>
+          <input
+            type="number"
+            min={0.2}
+            max={30}
+            step={0.1}
+            inputMode="decimal"
+            value={timeoutMs / 1000}
+            onChange={(event) =>
+              patch({
+                cueEnd: {
+                  mode: 'tap-or-timeout',
+                  timeoutMs: Math.round(Number(event.target.value) * 1000),
+                },
+              })
+            }
+          />
+        </label>
+        <label className="field">
+          <span>Rundens længde (sekunder)</span>
+          <input
+            type="number"
+            min={1}
+            max={3600}
+            inputMode="numeric"
+            value={Math.round(durationMs / 1000)}
+            onChange={(event) =>
+              patch({ stop: { mode: 'time', durationMs: Number(event.target.value) * 1000 } })
+            }
+          />
+        </label>
+      </section>
+    </>
   )
 }
 

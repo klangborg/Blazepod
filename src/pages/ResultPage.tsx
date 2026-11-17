@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { formatDate, formatDuration, formatMs } from '../app/format'
-import type { SessionRecord } from '../domain/results'
+import { PlayerScores } from '../components/PlayerScores'
+import { scoresByColor, type SessionRecord } from '../domain/results'
 import { getSession } from '../storage/history'
 
 export function ResultPage() {
@@ -22,6 +23,7 @@ export function ResultPage() {
   }
 
   const { result } = session
+  const colorScores = scoresByColor(session.events)
 
   return (
     <main className="page app-shell">
@@ -51,6 +53,12 @@ export function ResultPage() {
         </div>
       </div>
       <p className="muted">Varighed {formatDuration(result.durationMs)}. Afbrudte cues: {result.abortedCues}.</p>
+      {colorScores.length === 2 && (
+        <section className="card stack">
+          <h2>Spillere</h2>
+          <PlayerScores scores={colorScores} />
+        </section>
+      )}
       <section className="card">
         <h2>Runder</h2>
         <table className="table">

@@ -4,6 +4,7 @@ import { formatHex } from '../app/format'
 import { inspectWebBluetoothCapabilities } from '../ble/capabilities'
 import { DANISH_BROWSER_HELP } from '../ble/errors'
 import type { ManagedPod } from '../ble/PodManager'
+import { BatteryMeter } from '../components/BatteryMeter'
 
 export function PodsPage() {
   const { pods, connected, connect, disconnect, identify, rename, busy, error, transportKind, useWeb } =
@@ -84,6 +85,7 @@ function PodCard({
           {statusLabel(pod.status)}
         </span>
       </div>
+      <BatteryMeter manufacturerData={pod.manufacturerData} compact />
       <div className="field">
         <span>Navn</span>
         <input

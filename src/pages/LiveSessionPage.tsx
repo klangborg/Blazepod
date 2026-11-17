@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { usePods } from '../app/PodContext'
 import { formatDuration, formatMs } from '../app/format'
-import { minPodsNeeded, newId, type Exercise } from '../domain/exercises'
+import { isDuelExercise, minPodsNeeded, newId, type Exercise } from '../domain/exercises'
 import { PALETTE } from '../domain/colors'
 import { getExercise } from '../storage/exercises'
 import { saveSession } from '../storage/history'
 import { ExerciseRunner, type GroupAssignment } from '../engine/ExerciseRunner'
 import type { SessionRecord } from '../domain/results'
+import { decodeAdvertisedBattery } from '../ble/protocol'
+import { PlayerScores } from '../components/PlayerScores'
 
 export function LiveSessionPage() {
   const { exerciseId } = useParams()
@@ -15,6 +17,7 @@ export function LiveSessionPage() {
   const { manager, connected, connect, lightsOffAll, busy, error } = usePods()
   const [exercise, setExercise] = useState<Exercise | null>(null)
   const [assignments, setAssignments] = useState<Record<string, string[]>>({})
+  const [selectedPods, setSelectedPods] = useState<string[]>([])
   const [runner, setRunner] = useState<ExerciseRunner | null>(null)
   const [, setTick] = useState(0)
   const saved = useRef(false)
@@ -34,6 +37,24 @@ export function LiveSessionPage() {
       return next
     })
   }, [exercise])
+
+  const needed = exercise ? minPodsNeeded(exercise) : 1
+  const duel = exercise ? isDuelExercise(exercise) : false
+
+  useEffect(() => {
+    if (!exercise || !duel) return
+    const connectedIds = connected.map((pod) => pod.id)
+    setSelectedPods((current) => {
+      const kept = current.filter((id) => connectedIds.includes(id))
+      if (connectedIds.length === needed) {
+        const same =
+          current.length === connectedIds.length &&
+          current.every((id) => connectedIds.includes(id))
+        return same ? current : connectedIds
+      }
+      return kept.length === current.length ? current : kept
+    })
+  }, [connected, duel, exercise, needed])
 
   useEffect(() => {
     if (!runner) return
@@ -80,11 +101,20 @@ export function LiveSessionPage() {
     })
   }, [exercise, navigate, runner, runner?.getStatus(), runner?.getEvents().length])
 
-  const needed = exercise ? minPodsNeeded(exercise) : 1
   const enough = connected.length >= needed
+  const selectedReady = !duel || selectedPods.length === needed
+  const canStart = enough && selectedReady
 
   const grouped = useMemo(() => {
     if (!exercise) return []
+    if (duel) {
+      return [
+        {
+          groupId: exercise.groups[0]?.id ?? 'all',
+          podIds: selectedPods,
+        } satisfies GroupAssignment,
+      ]
+    }
     if (exercise.groups.length <= 1) {
       return [
         {
@@ -97,7 +127,7 @@ export function LiveSessionPage() {
       groupId: group.id,
       podIds: assignments[group.id] ?? [],
     }))
-  }, [assignments, connected, exercise])
+  }, [assignments, connected, duel, exercise, selectedPods])
 
   async function start(): Promise<void> {
     if (!exercise) return
@@ -127,14 +157,51 @@ export function LiveSessionPage() {
         <p className="lede">{exercise.notes || 'Klar til start, når pods er tilsluttet.'}</p>
         {error ? <div className="banner error">{error}</div> : null}
         <div className="card">
-          Forbundne pods: {connected.length} / mindst {needed}
+          Forbundne pods: {connected.length} / {duel ? needed : `mindst ${needed}`}
         </div>
-        {!enough && (
+        {connected.length < needed && (
           <button className="btn btn-primary" type="button" disabled={busy} onClick={() => void connect()}>
             Tilslut pod
           </button>
         )}
-        {exercise.groups.length > 1 && (
+        {duel && connected.length > 0 && (
+          <section className="card stack">
+            <h2>Vælg {needed} pods</h2>
+            <p className="muted">
+              Valgt {selectedPods.length} / {needed}
+            </p>
+            <div className="pod-pick">
+              {connected.map((pod) => {
+                const battery = decodeAdvertisedBattery(pod.manufacturerData)
+                const checked = selectedPods.includes(pod.id)
+                return (
+                  <label key={pod.id}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => {
+                        setSelectedPods((current) => {
+                          if (current.includes(pod.id)) {
+                            return current.filter((id) => id !== pod.id)
+                          }
+                          if (current.length >= needed) return current
+                          return [...current, pod.id]
+                        })
+                      }}
+                    />
+                    {battery === null ? pod.givenName : `${pod.givenName} · ${battery} %`}
+                  </label>
+                )
+              })}
+            </div>
+            {connected.length < needed && (
+              <button className="btn" type="button" disabled={busy} onClick={() => void connect()}>
+                Tilslut flere
+              </button>
+            )}
+          </section>
+        )}
+        {exercise.groups.length > 1 && !duel && (
           <section className="card stack">
             <h2>Tildel pods til grupper</h2>
             {exercise.groups.map((group) => (
@@ -148,17 +215,20 @@ export function LiveSessionPage() {
                     setAssignments((current) => ({ ...current, [group.id]: selected }))
                   }}
                 >
-                  {connected.map((pod) => (
-                    <option key={pod.id} value={pod.id}>
-                      {pod.givenName}
-                    </option>
-                  ))}
+                  {connected.map((pod) => {
+                    const battery = decodeAdvertisedBattery(pod.manufacturerData)
+                    return (
+                      <option key={pod.id} value={pod.id}>
+                        {battery === null ? pod.givenName : `${pod.givenName} · ${battery} %`}
+                      </option>
+                    )
+                  })}
                 </select>
               </label>
             ))}
           </section>
         )}
-        <button className="btn btn-primary btn-block" type="button" disabled={!enough} onClick={() => void start()}>
+        <button className="btn btn-primary btn-block" type="button" disabled={!canStart} onClick={() => void start()}>
           Start øvelse
         </button>
         <Link className="btn btn-ghost btn-block" to="/exercises" style={{ textAlign: 'center' }}>
@@ -171,6 +241,7 @@ export function LiveSessionPage() {
   const result = runner.getResult()
   const status = runner.getStatus()
   const cues = runner.getActiveCues()
+  const celebrateColor = runner.getCelebrateColor()
 
   return (
     <main className="live">
@@ -180,30 +251,42 @@ export function LiveSessionPage() {
         </h1>
         <span className="badge">{statusLabel(status)}</span>
       </div>
-      <div className="stats">
-        <div className="stat">
-          <span className="muted">Hits</span>
-          <b>{runner.getLiveHits()}</b>
-        </div>
-        <div className="stat">
-          <span className="muted">Miss</span>
-          <b>{runner.getLiveMisses()}</b>
-        </div>
-        <div className="stat">
-          <span className="muted">Bedst</span>
-          <b>{formatMs(result.bestReactionMs)}</b>
-        </div>
-        <div className="stat">
-          <span className="muted">Tid</span>
-          <b>{formatDuration(runner.elapsedMs())}</b>
-        </div>
-      </div>
-      <p className="muted">
-        Runde {runner.getRound()} / {exercise.rounds}
-        {exercise.stop.mode === 'hits'
-          ? ` · mål ${exercise.stop.count} hits`
-          : ` · ${Math.round(exercise.stop.durationMs / 1000)} s`}
-      </p>
+      {duel ? (
+        <>
+          <div className="live-clock">
+            <span className="muted">Tid tilbage</span>
+            <b>{formatDuration(runner.remainingRoundMs())}</b>
+          </div>
+          <PlayerScores scores={runner.getLiveColorScores()} />
+        </>
+      ) : (
+        <>
+          <div className="stats">
+            <div className="stat">
+              <span className="muted">Hits</span>
+              <b>{runner.getLiveHits()}</b>
+            </div>
+            <div className="stat">
+              <span className="muted">Miss</span>
+              <b>{runner.getLiveMisses()}</b>
+            </div>
+            <div className="stat">
+              <span className="muted">Bedst</span>
+              <b>{formatMs(result.bestReactionMs)}</b>
+            </div>
+            <div className="stat">
+              <span className="muted">Tid</span>
+              <b>{formatDuration(runner.elapsedMs())}</b>
+            </div>
+          </div>
+          <p className="muted">
+            Runde {runner.getRound()} / {exercise.rounds}
+            {exercise.stop.mode === 'hits'
+              ? ` · mål ${exercise.stop.count} hits`
+              : ` · ${Math.round(exercise.stop.durationMs / 1000)} s`}
+          </p>
+        </>
+      )}
       {status === 'paused' && (
         <div className="banner error">
           Sat på pause: {runner.getPauseReason()}. Afbrudte cues tæller ikke som miss.
@@ -218,7 +301,21 @@ export function LiveSessionPage() {
         </div>
       )}
       <div className="live-cues">
-        {cues.length === 0 ? (
+        {celebrateColor ? (
+          selectedPods.map((podId) => {
+            const color = PALETTE[celebrateColor]
+            const pod = connected.find((item) => item.id === podId)
+            return (
+              <div
+                key={podId}
+                className="cue-orb"
+                style={{ background: `rgb(${color.r},${color.g},${color.b})` }}
+              >
+                {pod?.givenName ?? podId.slice(0, 6)}
+              </div>
+            )
+          })
+        ) : cues.length === 0 ? (
           <div className="card empty">{idleLabel(status)}</div>
         ) : (
           cues.map((cue) => {
@@ -259,6 +356,7 @@ function statusLabel(status: string): string {
     cueing: 'Cue',
     resting: 'Hvile',
     paused: 'Pause (afbrudt)',
+    celebrating: 'Slut',
     stopped: 'Stoppet',
     completed: 'Færdig',
     idle: 'Klar',
@@ -270,6 +368,7 @@ function idleLabel(status: string): string {
   if (status === 'delay') return 'Venter på næste cue…'
   if (status === 'resting') return 'Hvile mellem runder…'
   if (status === 'paused') return 'Afventer pods'
+  if (status === 'celebrating') return 'Pods viser resultatet…'
   if (status === 'completed') return 'Øvelse færdig'
   if (status === 'stopped') return 'Stoppet'
   return 'Ingen aktive lys'

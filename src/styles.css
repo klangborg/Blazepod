@@ -27,11 +27,16 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  height: 100%;
   margin: 0;
 }
 
+html {
+  height: 100dvh;
+}
+
 body {
+  overflow: hidden;
   font-family: var(--font);
   background:
     radial-gradient(1200px 500px at 80% -10%, rgba(255, 106, 26, 0.16), transparent 55%),
@@ -53,24 +58,28 @@ a {
   color: var(--accent-2);
 }
 
-.app-shell {
-  min-height: 100dvh;
-  padding-top: calc(var(--safe-top) + 64px);
-  padding-bottom: calc(var(--safe-bottom) + var(--nav-h) + 16px);
+.app-frame {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .topbar,
 .bottom-nav {
-  position: fixed;
-  left: 0;
-  right: 0;
+  flex: none;
   z-index: 20;
   background: rgba(7, 8, 11, 0.86);
   backdrop-filter: blur(16px);
 }
 
 .topbar {
-  top: 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -129,7 +138,6 @@ a {
 }
 
 .bottom-nav {
-  bottom: 0;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   min-height: calc(var(--nav-h) + var(--safe-bottom));
@@ -241,9 +249,16 @@ a {
 }
 
 .emergency {
-  position: sticky;
-  bottom: calc(var(--nav-h) + var(--safe-bottom) + 8px);
-  z-index: 15;
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: 8px 16px;
+  background: rgba(7, 8, 11, 0.94);
+  border-top: 1px solid var(--line);
+}
+
+.emergency .btn-block {
+  width: min(688px, 100%);
 }
 
 .field {
@@ -305,6 +320,77 @@ a {
   align-items: start;
 }
 
+.battery {
+  display: grid;
+  gap: 6px;
+}
+
+.battery.compact {
+  min-width: 92px;
+}
+
+.battery-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.battery-label strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.battery-label strong.ok {
+  color: var(--ok);
+}
+
+.battery-label strong.warn {
+  color: var(--warn);
+}
+
+.battery-label strong.danger {
+  color: var(--danger);
+}
+
+.battery-label strong.unknown {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.battery-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #0d0f14;
+  overflow: hidden;
+}
+
+.battery-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--muted);
+  min-width: 0;
+}
+
+.battery-fill.ok {
+  background: var(--ok);
+}
+
+.battery-fill.warn {
+  background: var(--warn);
+}
+
+.battery-fill.danger {
+  background: var(--danger);
+}
+
+.battery-fill.unknown {
+  width: 0;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -356,6 +442,51 @@ a {
   gap: 10px;
 }
 
+.player-scores {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.player-card {
+  background: var(--bg-card-2);
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+}
+
+.player-card b {
+  display: block;
+  font-size: 32px;
+  letter-spacing: -0.04em;
+}
+
+.live-clock {
+  text-align: center;
+}
+
+.live-clock b {
+  display: block;
+  font-size: 40px;
+  letter-spacing: -0.04em;
+}
+
+.pod-pick {
+  display: grid;
+  gap: 8px;
+}
+
+.pod-pick label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: var(--bg-card-2);
+  border: 1px solid var(--line);
+}
+
 .stat {
   background: var(--bg-card-2);
   border-radius: 16px;
@@ -369,8 +500,8 @@ a {
 }
 
 .live {
-  min-height: 100dvh;
-  padding: calc(var(--safe-top) + 72px) 16px calc(var(--safe-bottom) + 16px);
+  min-height: 100%;
+  padding: 16px 16px calc(var(--safe-bottom) + 16px);
   display: grid;
   gap: 16px;
   align-content: start;

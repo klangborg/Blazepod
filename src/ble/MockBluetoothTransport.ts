@@ -155,7 +155,7 @@ function nextMockSpec(): MockPodSpec {
   return {
     id: `mock-${mockSeq}`,
     name: `BlazePod Mock ${mockSeq}`,
-    manufacturerData: KNOWN_EXAMPLE.manufacturerData.slice(),
+    manufacturerData: Uint8Array.from([0x5a, ...KNOWN_EXAMPLE.manufacturerData]),
   }
 }
 

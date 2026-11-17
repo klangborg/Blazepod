@@ -2,6 +2,7 @@
  * Blazepod BLE application protocol.
  * Implemented from public reverse-engineering notes (company ID 0x09D7 / Coyotta).
  * Auth is application-level, not BLE pairing. Never write Nordic DFU.
+ * Advertisement payload after company ID: optional battery byte (0–100), then 5 auth bytes.
  */
 
 export const COMPANY_ID = 0x09d7
@@ -115,6 +116,20 @@ export function extractAuthInput(manufacturerData: Uint8Array): AuthInput {
     crcInput: slice.slice(1),
     manufacturerData: manufacturerData.slice(),
   }
+}
+
+/**
+ * Battery percent inferred from advertisement manufacturer payload.
+ * Public packets look like `[battery, offset, crc0, crc1, crc2, crc3]` after the
+ * company ID is stripped (e.g. `5A 01 DE AD BE EF` → 90 %). Auth still uses the
+ * last 5 bytes. Values outside 0–100 are ignored.
+ */
+export function decodeAdvertisedBattery(manufacturerData: Uint8Array): number | null {
+  if (manufacturerData.byteLength < 6) return null
+  const extra = manufacturerData.subarray(0, manufacturerData.byteLength - 5)
+  const candidate = extra[0]
+  if (candidate === undefined || candidate > 100) return null
+  return candidate
 }
 
 export function authPoly(offset: number): number {

@@ -3,6 +3,8 @@ import { COLOR_ORDER } from './colors'
 
 export const EXERCISE_VERSION = 1 as const
 
+export type ExerciseKind = 'standard' | 'duel'
+
 export type OrderMode = 'random' | 'sequence'
 
 export interface PodGroup {
@@ -43,6 +45,8 @@ export interface Exercise {
   restMs: number
   autoOffOnTap: boolean
   dim: number
+  kind?: ExerciseKind
+  podCount?: number
 }
 
 export interface ExerciseInput {
@@ -61,6 +65,8 @@ export interface ExerciseInput {
   restMs?: number
   autoOffOnTap?: boolean
   dim?: number
+  kind?: ExerciseKind
+  podCount?: number
 }
 
 export function newId(): string {
@@ -71,8 +77,13 @@ export function nowIso(): string {
   return new Date().toISOString()
 }
 
+export function isDuelExercise(exercise: Pick<Exercise, 'kind'>): boolean {
+  return exercise.kind === 'duel'
+}
+
 export function createExercise(input: ExerciseInput): Exercise {
   const timestamp = nowIso()
+  const duel = input.kind === 'duel'
   const exercise: Exercise = {
     id: newId(),
     version: EXERCISE_VERSION,
@@ -83,16 +94,18 @@ export function createExercise(input: ExerciseInput): Exercise {
     groups: input.groups?.length ? input.groups : [{ id: newId(), name: 'Alle' }],
     groupOrder: input.groupOrder ?? 'random',
     podOrder: input.podOrder ?? 'random',
-    simultaneousCount: input.simultaneousCount ?? 1,
-    colors: input.colors?.length ? input.colors : ['red', 'blue', 'green'],
+    simultaneousCount: duel ? 2 : (input.simultaneousCount ?? 1),
+    colors: input.colors?.length ? input.colors : duel ? ['blue', 'red'] : ['red', 'blue', 'green'],
     colorOrder: input.colorOrder ?? 'random',
     cueEnd: input.cueEnd ?? { mode: 'tap-or-timeout', timeoutMs: 2500 },
-    delay: input.delay ?? { mode: 'fixed', ms: 800 },
-    stop: input.stop ?? { mode: 'hits', count: 20 },
-    rounds: input.rounds ?? 1,
-    restMs: input.restMs ?? 10000,
+    delay: input.delay ?? { mode: 'fixed', ms: duel ? 0 : 800 },
+    stop: input.stop ?? (duel ? { mode: 'time', durationMs: 45_000 } : { mode: 'hits', count: 20 }),
+    rounds: duel ? 1 : (input.rounds ?? 1),
+    restMs: duel ? 0 : (input.restMs ?? 10000),
     autoOffOnTap: input.autoOffOnTap ?? true,
     dim: input.dim ?? 1,
+    kind: input.kind ?? 'standard',
+    podCount: duel ? (input.podCount ?? 4) : input.podCount,
   }
   return exercise
 }
@@ -168,6 +181,24 @@ export function validateExercise(exercise: Exercise): { issues: ValidationIssue[
   if (exercise.dim < 0.05 || exercise.dim > 1) {
     issues.push({ field: 'dim', message: 'Lysstyrke skal være mellem 5 % og 100 %.' })
   }
+  if (isDuelExercise(exercise)) {
+    if (exercise.colors.length !== 2 || exercise.colors[0] === exercise.colors[1]) {
+      issues.push({
+        field: 'colors',
+        message: 'To spillere skal have to forskellige farver.',
+      })
+    }
+    const podCount = exercise.podCount ?? 0
+    if (podCount < 3 || podCount > 12) {
+      issues.push({ field: 'podCount', message: 'Antal pods skal være mellem 3 og 12.' })
+    }
+    if (exercise.cueEnd.mode === 'tap') {
+      issues.push({ field: 'cueEnd', message: 'Hver pod skal have en tidsgrænse.' })
+    }
+    if (exercise.stop.mode !== 'time') {
+      issues.push({ field: 'stop', message: 'Runden skal have en varighed.' })
+    }
+  }
   return { issues }
 }
 
@@ -176,6 +207,9 @@ export function timeoutOf(cueEnd: CueEnd): number | null {
 }
 
 export function minPodsNeeded(exercise: Exercise): number {
+  if (isDuelExercise(exercise)) {
+    return exercise.podCount ?? 4
+  }
   return Math.max(exercise.simultaneousCount, exercise.groups.length)
 }
 
@@ -220,6 +254,20 @@ export const PRESET_EXERCISES: ExerciseInput[] = [
     stop: { mode: 'hits', count: 12 },
     rounds: 3,
     restMs: 15_000,
+    autoOffOnTap: true,
+    dim: 1,
+  },
+  {
+    name: 'To spillere',
+    notes: 'Hver spiller har sin farve. Begge lys er tændt, og et miss flytter kun den spillers lys.',
+    kind: 'duel',
+    podCount: 4,
+    colors: ['blue', 'red'],
+    simultaneousCount: 2,
+    cueEnd: { mode: 'tap-or-timeout', timeoutMs: 2500 },
+    delay: { mode: 'fixed', ms: 0 },
+    stop: { mode: 'time', durationMs: 45_000 },
+    rounds: 1,
     autoOffOnTap: true,
     dim: 1,
   },

@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { cloneExercise, type Exercise } from '../domain/exercises'
+import { cloneExercise, isDuelExercise, minPodsNeeded, type Exercise } from '../domain/exercises'
 import { deleteExercise, listExercises, saveExercise } from '../storage/exercises'
-import { minPodsNeeded } from '../domain/exercises'
 
 export function ExercisesPage() {
   const [exercises, setExercises] = useState<Exercise[]>([])
@@ -29,11 +28,19 @@ export function ExercisesPage() {
           <article className="list-item" key={exercise.id}>
             <strong>{exercise.name}</strong>
             <span className="muted">
-              {minPodsNeeded(exercise)}+ pods · {exercise.rounds} runde
-              {exercise.rounds === 1 ? '' : 'r'} ·{' '}
-              {exercise.stop.mode === 'hits'
-                ? `${exercise.stop.count} hits`
-                : `${Math.round(exercise.stop.durationMs / 1000)} s`}
+              {isDuelExercise(exercise)
+                ? `${minPodsNeeded(exercise)} pods · ${
+                    exercise.stop.mode === 'time'
+                      ? `${Math.round(exercise.stop.durationMs / 1000)} s`
+                      : `${exercise.stop.count} hits`
+                  }`
+                : `${minPodsNeeded(exercise)}+ pods · ${exercise.rounds} runde${
+                    exercise.rounds === 1 ? '' : 'r'
+                  } · ${
+                    exercise.stop.mode === 'hits'
+                      ? `${exercise.stop.count} hits`
+                      : `${Math.round(exercise.stop.durationMs / 1000)} s`
+                  }`}
             </span>
             <div className="row">
               <Link className="btn" to={`/session/${exercise.id}`}>

@@ -1,13 +1,10 @@
-import { decodeAdvertisedBattery } from '../ble/protocol'
-
 export function BatteryMeter({
-  manufacturerData,
+  percent,
   compact = false,
 }: {
-  manufacturerData: Uint8Array
+  percent: number | null
   compact?: boolean
 }) {
-  const percent = decodeAdvertisedBattery(manufacturerData)
   const tone = batteryTone(percent)
 
   return (
@@ -23,7 +20,7 @@ export function BatteryMeter({
         />
       </div>
       {compact ? null : (
-        <div className="muted">Fra reklamedata ved tilslutning</div>
+        <div className="muted">Fra podden ved tilslutning</div>
       )}
     </div>
   )

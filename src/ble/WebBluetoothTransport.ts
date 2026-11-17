@@ -1,9 +1,14 @@
 import {
   assertWritableUuid,
+  BATTERY_LEVEL_UUID,
+  BATTERY_SERVICE_UUID,
+  clampBatteryPercent,
   COMPANY_ID,
   COLOR_CHAR_UUID,
   COLOR_SERVICE_UUID,
   copyBytes,
+  decodeAdvertisedBattery,
+  decodeServiceDataBattery,
   NAME_PREFIX,
   OPTIONAL_SERVICES,
   TAP_CHAR_UUID,
@@ -17,6 +22,8 @@ import { SerialQueue } from './gattQueue'
 import type { BleConnection, BleTransport, TransportCapabilities } from './transport'
 
 const ADVERTISEMENT_WAIT_MS = 10_000
+const ADVERTISEMENT_SETTLE_MS = 450
+const ADVERTISEMENT_QUICK_SETTLE_MS = 80
 
 export class WebBluetoothTransport implements BleTransport {
   readonly kind = 'web' as const
@@ -45,39 +52,48 @@ export class WebBluetoothTransport implements BleTransport {
     }
 
     const device = await requestBlazepodDevice()
-    const manufacturerData = await waitForManufacturerData(device)
+    const advertisement = await waitForManufacturerData(device)
     const server = await connectGatt(device)
     const chars = await resolveCharacteristics(server)
-    return new WebBluetoothConnection(device, server, chars, manufacturerData)
+    return new WebBluetoothConnection(device, server, chars, advertisement)
   }
+}
+
+interface AdvertisementSnapshot {
+  manufacturerData: Uint8Array
+  advertisedBattery: number | null
 }
 
 interface GattChars {
   rx: BluetoothRemoteGATTCharacteristic
   color: BluetoothRemoteGATTCharacteristic
   tap: BluetoothRemoteGATTCharacteristic
+  battery: BluetoothRemoteGATTCharacteristic | null
 }
 
 class WebBluetoothConnection implements BleConnection {
   readonly id: string
   readonly name?: string
   readonly manufacturerData: Uint8Array
+  readonly advertisedBattery: number | null
   private readonly device: BluetoothDevice
   private readonly chars: GattChars
   private readonly queue = new SerialQueue()
   private disconnectHandlers = new Set<() => void>()
   private tapListener: ((event: Event) => void) | null = null
+  private batteryListener: ((event: Event) => void) | null = null
   connected: boolean
 
   constructor(
     device: BluetoothDevice,
     _server: BluetoothRemoteGATTServer,
     chars: GattChars,
-    manufacturerData: Uint8Array,
+    advertisement: AdvertisementSnapshot,
   ) {
     this.device = device
     this.chars = chars
-    this.manufacturerData = manufacturerData
+    this.manufacturerData = advertisement.manufacturerData
+    this.advertisedBattery = advertisement.advertisedBattery
     this.id = device.id
     this.name = device.name ?? undefined
     this.connected = true
@@ -118,10 +134,44 @@ class WebBluetoothConnection implements BleConnection {
     })
   }
 
+  async readBattery(): Promise<number | null> {
+    if (!this.chars.battery) return this.advertisedBattery
+    return this.queue.enqueue(async () => {
+      this.assertConnected()
+      try {
+        const view = await this.chars.battery?.readValue()
+        if (!view) return this.advertisedBattery
+        return clampBatteryPercent(view.getUint8(0)) ?? this.advertisedBattery
+      } catch {
+        return this.advertisedBattery
+      }
+    })
+  }
+
+  async startBatteryNotifications(onLevel: (percent: number) => void): Promise<void> {
+    const characteristic = this.chars.battery
+    if (!characteristic?.properties.notify) return
+    await this.queue.enqueue(async () => {
+      this.assertConnected()
+      this.batteryListener = (event: Event) => {
+        const target = event.target as BluetoothRemoteGATTCharacteristic
+        if (!target.value) return
+        const percent = clampBatteryPercent(target.value.getUint8(0))
+        if (percent !== null) onLevel(percent)
+      }
+      characteristic.addEventListener('characteristicvaluechanged', this.batteryListener)
+      await characteristic.startNotifications()
+    })
+  }
+
   async disconnect(): Promise<void> {
     if (this.tapListener) {
       this.chars.tap.removeEventListener('characteristicvaluechanged', this.tapListener)
       this.tapListener = null
+    }
+    if (this.batteryListener && this.chars.battery) {
+      this.chars.battery.removeEventListener('characteristicvaluechanged', this.batteryListener)
+      this.batteryListener = null
     }
     try {
       this.device.gatt?.disconnect()
@@ -190,32 +240,63 @@ async function requestBlazepodDevice(): Promise<BluetoothDevice> {
   }
 }
 
-async function waitForManufacturerData(device: BluetoothDevice): Promise<Uint8Array> {
+async function waitForManufacturerData(device: BluetoothDevice): Promise<AdvertisementSnapshot> {
   if (typeof device.watchAdvertisements !== 'function') {
     throw new BleError(BleErrorCode.NoWatchAdvertisements, missingAdvertisementHelp())
   }
 
   const abort = new AbortController()
-  return new Promise<Uint8Array>((resolve, reject) => {
+  return new Promise<AdvertisementSnapshot>((resolve, reject) => {
     let settled = false
+    let best: Uint8Array | null = null
+    let serviceBattery: number | null = null
+    let settleTimer: number | null = null
 
     const finish = (action: () => void): void => {
       if (settled) return
       settled = true
       window.clearTimeout(timer)
+      if (settleTimer !== null) window.clearTimeout(settleTimer)
       device.removeEventListener('advertisementreceived', onAd)
       abort.abort()
       action()
     }
 
+    const complete = (): void => {
+      if (!best) return
+      const manufacturerData = best
+      finish(() =>
+        resolve({
+          manufacturerData,
+          advertisedBattery: serviceBattery ?? decodeAdvertisedBattery(manufacturerData),
+        }),
+      )
+    }
+
+    const scheduleSettle = (ms: number): void => {
+      if (settleTimer !== null) window.clearTimeout(settleTimer)
+      settleTimer = window.setTimeout(complete, ms)
+    }
+
     const onAd = (event: Event): void => {
       const ad = event as BluetoothAdvertisingEvent
-      const view = ad.manufacturerData.get(COMPANY_ID)
-      if (!view || view.byteLength < 5) return
-      finish(() => resolve(copyBytes(view)))
+      const fromService = batteryFromServiceData(ad)
+      if (fromService !== null) serviceBattery = fromService
+      const view = manufacturerView(ad)
+      if (view && view.byteLength >= 5) {
+        const bytes = copyBytes(view)
+        if (!best || bytes.byteLength > best.byteLength) best = bytes
+      }
+      if (!best) return
+      const hasBattery = serviceBattery !== null || decodeAdvertisedBattery(best) !== null
+      scheduleSettle(hasBattery ? ADVERTISEMENT_QUICK_SETTLE_MS : ADVERTISEMENT_SETTLE_MS)
     }
 
     const timer = window.setTimeout(() => {
+      if (best) {
+        complete()
+        return
+      }
       finish(() =>
         reject(
           new BleError(
@@ -238,6 +319,25 @@ async function waitForManufacturerData(device: BluetoothDevice): Promise<Uint8Ar
       )
     })
   })
+}
+
+function manufacturerView(ad: BluetoothAdvertisingEvent): DataView | undefined {
+  const direct = ad.manufacturerData.get(COMPANY_ID)
+  if (direct && direct.byteLength >= 5) return direct
+  let best: DataView | undefined
+  for (const [id, view] of ad.manufacturerData.entries()) {
+    if (id === COMPANY_ID && view.byteLength >= 5) return view
+    if (!best || view.byteLength > best.byteLength) best = view
+  }
+  return best
+}
+
+function batteryFromServiceData(ad: BluetoothAdvertisingEvent): number | null {
+  for (const [uuid, view] of ad.serviceData.entries()) {
+    const percent = decodeServiceDataBattery(uuid, copyBytes(view))
+    if (percent !== null) return percent
+  }
+  return null
 }
 
 async function connectGatt(device: BluetoothDevice): Promise<BluetoothRemoteGATTServer> {
@@ -265,7 +365,8 @@ async function resolveCharacteristics(
     const color = await colorService.getCharacteristic(COLOR_CHAR_UUID)
     const tapService = await server.getPrimaryService(TAP_SERVICE_UUID)
     const tap = await tapService.getCharacteristic(TAP_CHAR_UUID)
-    return { rx, color, tap }
+    const battery = await readOptionalBatteryCharacteristic(server)
+    return { rx, color, tap, battery }
   } catch (error) {
     try {
       server.disconnect()
@@ -277,6 +378,17 @@ async function resolveCharacteristics(
       'Kunne ikke åbne UART-, farve- eller tap-service. Er det en Blazepod?',
       { cause: error },
     )
+  }
+}
+
+async function readOptionalBatteryCharacteristic(
+  server: BluetoothRemoteGATTServer,
+): Promise<BluetoothRemoteGATTCharacteristic | null> {
+  try {
+    const service = await server.getPrimaryService(BATTERY_SERVICE_UUID)
+    return await service.getCharacteristic(BATTERY_LEVEL_UUID)
+  } catch {
+    return null
   }
 }
 

@@ -134,7 +134,7 @@ export function DiagnosticsPage() {
         <section className="card stack">
           <h2>{pod.givenName}</h2>
           <div className="muted">Status: {pod.status}</div>
-          <BatteryMeter manufacturerData={pod.manufacturerData} />
+          <BatteryMeter percent={pod.batteryPercent} />
           <div>
             <div className="muted">Manufacturer data</div>
             <div className="mono">{formatHex(pod.manufacturerData)}</div>

@@ -1,6 +1,8 @@
 import {
   buildAuthToken,
+  clampBatteryPercent,
   copyBytes,
+  decodeAdvertisedBattery,
   KNOWN_EXAMPLE,
   toHex,
 } from './protocol'
@@ -11,6 +13,7 @@ export interface MockPodSpec {
   id: string
   name: string
   manufacturerData: Uint8Array
+  batteryPercent?: number | null
 }
 
 export interface MockTransportOptions {
@@ -25,18 +28,26 @@ class MockConnection implements BleConnection {
   id: string
   name: string
   manufacturerData: Uint8Array
+  advertisedBattery: number | null
   connected = true
   lastColor: Uint8Array | null = null
   lastAuth: Uint8Array | null = null
   private tapHandler: ((raw: Uint8Array) => void) | null = null
+  private batteryHandler: ((percent: number) => void) | null = null
   private disconnectHandlers = new Set<() => void>()
   private readonly options: MockTransportOptions
   private readonly expectedToken: Uint8Array
+  private readonly gattBattery: number | null
 
   constructor(spec: MockPodSpec, options: MockTransportOptions) {
     this.id = spec.id
     this.name = spec.name
     this.manufacturerData = spec.manufacturerData
+    this.advertisedBattery = decodeAdvertisedBattery(spec.manufacturerData)
+    this.gattBattery =
+      spec.batteryPercent === undefined
+        ? this.advertisedBattery
+        : clampBatteryPercent(spec.batteryPercent ?? NaN)
     this.options = options
     this.expectedToken = buildAuthToken(spec.manufacturerData)
   }
@@ -65,6 +76,22 @@ class MockConnection implements BleConnection {
 
   emitTap(raw: Uint8Array): void {
     this.tapHandler?.(copyBytes(raw))
+  }
+
+  async readBattery(): Promise<number | null> {
+    this.assertConnected()
+    return this.gattBattery ?? this.advertisedBattery
+  }
+
+  async startBatteryNotifications(onLevel: (percent: number) => void): Promise<void> {
+    this.assertConnected()
+    this.batteryHandler = onLevel
+  }
+
+  emitBattery(percent: number): void {
+    const level = clampBatteryPercent(percent)
+    if (level === null) return
+    this.batteryHandler?.(level)
   }
 
   async disconnect(): Promise<void> {

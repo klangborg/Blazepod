@@ -16,6 +16,9 @@ export const COLOR_CHAR_UUID = '50c912a2-4cb8-4c84-b745-0e58a0280cd6'
 export const TAP_SERVICE_UUID = '50c928bd-4cb8-4c84-b745-0e58a0280cd6'
 export const TAP_CHAR_UUID = '50c9727e-4cb8-4c84-b745-0e58a0280cd6'
 
+export const BATTERY_SERVICE_UUID = '0000180f-0000-1000-8000-00805f9b34fb'
+export const BATTERY_LEVEL_UUID = '00002a19-0000-1000-8000-00805f9b34fb'
+
 /** Nordic DFU — must never be written. */
 export const NORDIC_DFU_SERVICE_UUID = '8e400001-f315-4f60-9fb8-838830daea50'
 
@@ -23,6 +26,7 @@ export const OPTIONAL_SERVICES = [
   UART_SERVICE_UUID,
   COLOR_SERVICE_UUID,
   TAP_SERVICE_UUID,
+  BATTERY_SERVICE_UUID,
 ] as const
 
 export const AUTH_HOLD_MS = 12_000
@@ -118,18 +122,56 @@ export function extractAuthInput(manufacturerData: Uint8Array): AuthInput {
   }
 }
 
+export function clampBatteryPercent(value: number): number | null {
+  if (!Number.isFinite(value)) return null
+  const rounded = Math.round(value)
+  if (rounded < 0 || rounded > 100) return null
+  return rounded
+}
+
+/** Some browsers include company ID `D7 09` in the manufacturer payload. */
+export function stripCompanyIdPrefix(manufacturerData: Uint8Array): Uint8Array {
+  if (
+    manufacturerData.byteLength >= 7 &&
+    manufacturerData[0] === (COMPANY_ID & 0xff) &&
+    manufacturerData[1] === (COMPANY_ID >>> 8)
+  ) {
+    return manufacturerData.slice(2)
+  }
+  return manufacturerData
+}
+
+export function isBatteryServiceUuid(uuid: string | number): boolean {
+  if (typeof uuid === 'number') {
+    return uuid === 0x180f || uuid === 0x2a19
+  }
+  const normalized = uuid.toLowerCase().replace(/-/g, '')
+  return (
+    normalized === '180f' ||
+    normalized === '0000180f00001000800000805f9b34fb' ||
+    normalized === '2a19' ||
+    normalized === '00002a1900001000800000805f9b34fb'
+  )
+}
+
+export function decodeServiceDataBattery(uuid: string | number, bytes: Uint8Array): number | null {
+  if (!isBatteryServiceUuid(uuid) || bytes.byteLength < 1) return null
+  return clampBatteryPercent(bytes[0] ?? NaN)
+}
+
 /**
- * Battery percent inferred from advertisement manufacturer payload.
+ * Battery percent from advertisement manufacturer payload.
  * Public packets look like `[battery, offset, crc0, crc1, crc2, crc3]` after the
  * company ID is stripped (e.g. `5A 01 DE AD BE EF` → 90 %). Auth still uses the
  * last 5 bytes. Values outside 0–100 are ignored.
  */
 export function decodeAdvertisedBattery(manufacturerData: Uint8Array): number | null {
-  if (manufacturerData.byteLength < 6) return null
-  const extra = manufacturerData.subarray(0, manufacturerData.byteLength - 5)
-  const candidate = extra[0]
-  if (candidate === undefined || candidate > 100) return null
-  return candidate
+  const payload = stripCompanyIdPrefix(manufacturerData)
+  if (payload.byteLength < 6) return null
+  const extra = payload.subarray(0, payload.byteLength - 5)
+  const first = extra[0]
+  const last = extra[extra.length - 1]
+  return clampBatteryPercent(first ?? NaN) ?? clampBatteryPercent(last ?? NaN)
 }
 
 export function authPoly(offset: number): number {

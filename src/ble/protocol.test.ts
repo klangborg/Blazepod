@@ -4,6 +4,7 @@ import {
   buildAuthToken,
   crc32LsbFirst,
   decodeAdvertisedBattery,
+  decodeServiceDataBattery,
   decodeTap,
   encodeColor,
   encodeOff,
@@ -41,6 +42,9 @@ describe('auth protocol', () => {
     expect(decodeAdvertisedBattery(fromHex('65 01 DE AD BE EF'))).toBeNull()
     expect(decodeAdvertisedBattery(fromHex('AA BB 01 DE AD BE EF'))).toBeNull()
     expect(decodeAdvertisedBattery(fromHex('5A AA BB 01 DE AD BE EF'))).toBe(90)
+    expect(decodeAdvertisedBattery(fromHex('D7 09 5A 01 DE AD BE EF'))).toBe(90)
+    expect(decodeAdvertisedBattery(fromHex('FF 4B 01 DE AD BE EF'))).toBe(75)
+    expect(decodeServiceDataBattery('0000180f-0000-1000-8000-00805f9b34fb', fromHex('48'))).toBe(72)
   })
 
   it('wraps CRC as unsigned 32-bit', () => {

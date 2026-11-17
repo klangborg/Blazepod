@@ -17,10 +17,13 @@ export interface BleConnection {
   id: string
   name?: string
   manufacturerData: Uint8Array
+  advertisedBattery: number | null
   connected: boolean
   writeAuth(token: Uint8Array): Promise<void>
   writeColor(payload: Uint8Array): Promise<void>
   startTapNotifications(onTap: (raw: Uint8Array) => void): Promise<void>
+  readBattery(): Promise<number | null>
+  startBatteryNotifications(onLevel: (percent: number) => void): Promise<void>
   disconnect(): Promise<void>
   onDisconnected(handler: () => void): () => void
 }

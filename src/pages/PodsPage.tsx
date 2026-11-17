@@ -85,7 +85,7 @@ function PodCard({
           {statusLabel(pod.status)}
         </span>
       </div>
-      <BatteryMeter manufacturerData={pod.manufacturerData} compact />
+      <BatteryMeter percent={pod.batteryPercent} compact />
       <div className="field">
         <span>Navn</span>
         <input

@@ -2,6 +2,7 @@ import { colorRgb } from '../domain/colors'
 import {
   AUTH_HOLD_MS,
   buildAuthToken,
+  decodeAdvertisedBattery,
   decodeTap,
   encodeColor,
   encodeOff,
@@ -19,6 +20,7 @@ export interface ManagedPod {
   bleName?: string
   givenName: string
   manufacturerData: Uint8Array
+  batteryPercent: number | null
   authToken: Uint8Array | null
   status: PodStatus
   lastTap: TapNotification | null
@@ -105,6 +107,8 @@ export class PodManager implements LightsController {
       bleName: connection.name,
       givenName,
       manufacturerData: connection.manufacturerData,
+      batteryPercent:
+        connection.advertisedBattery ?? decodeAdvertisedBattery(connection.manufacturerData),
       authToken: null,
       status: 'authenticating',
       lastTap: null,
@@ -137,6 +141,7 @@ export class PodManager implements LightsController {
           /* ignore malformed packets */
         }
       })
+      await this.refreshBattery(pod, connection)
       pod.status = 'connected'
       pod.connectedAt = Date.now()
       pod.lastError = null
@@ -217,6 +222,26 @@ export class PodManager implements LightsController {
       await sleep(220)
       await this.lightsOff(id)
       await sleep(160)
+    }
+  }
+
+  private async refreshBattery(pod: ManagedPod, connection: BleConnection): Promise<void> {
+    try {
+      const percent = await connection.readBattery()
+      if (percent !== null) {
+        pod.batteryPercent = percent
+        this.emit()
+      }
+    } catch {
+      /* advertisement value is enough */
+    }
+    try {
+      await connection.startBatteryNotifications((percent) => {
+        pod.batteryPercent = percent
+        this.emit()
+      })
+    } catch {
+      /* notifications are optional */
     }
   }
 

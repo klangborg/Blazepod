@@ -8,7 +8,6 @@ import { getExercise } from '../storage/exercises'
 import { saveSession } from '../storage/history'
 import { ExerciseRunner, type GroupAssignment } from '../engine/ExerciseRunner'
 import type { SessionRecord } from '../domain/results'
-import { decodeAdvertisedBattery } from '../ble/protocol'
 import { PlayerScores } from '../components/PlayerScores'
 
 export function LiveSessionPage() {
@@ -172,7 +171,6 @@ export function LiveSessionPage() {
             </p>
             <div className="pod-pick">
               {connected.map((pod) => {
-                const battery = decodeAdvertisedBattery(pod.manufacturerData)
                 const checked = selectedPods.includes(pod.id)
                 return (
                   <label key={pod.id}>
@@ -189,7 +187,9 @@ export function LiveSessionPage() {
                         })
                       }}
                     />
-                    {battery === null ? pod.givenName : `${pod.givenName} · ${battery} %`}
+                    {pod.batteryPercent === null
+                      ? pod.givenName
+                      : `${pod.givenName} · ${pod.batteryPercent} %`}
                   </label>
                 )
               })}
@@ -215,14 +215,13 @@ export function LiveSessionPage() {
                     setAssignments((current) => ({ ...current, [group.id]: selected }))
                   }}
                 >
-                  {connected.map((pod) => {
-                    const battery = decodeAdvertisedBattery(pod.manufacturerData)
-                    return (
-                      <option key={pod.id} value={pod.id}>
-                        {battery === null ? pod.givenName : `${pod.givenName} · ${battery} %`}
-                      </option>
-                    )
-                  })}
+                  {connected.map((pod) => (
+                    <option key={pod.id} value={pod.id}>
+                      {pod.batteryPercent === null
+                        ? pod.givenName
+                        : `${pod.givenName} · ${pod.batteryPercent} %`}
+                    </option>
+                  ))}
                 </select>
               </label>
             ))}

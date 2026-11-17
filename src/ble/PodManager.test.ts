@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BleError, BleErrorCode } from './errors'
 import { encodeMockTap, MockBluetoothTransport } from './MockBluetoothTransport'
 import { PodManager } from './PodManager'
-import { TapState, toHex } from './protocol'
+import { fromHex, TapState, toHex } from './protocol'
 
 describe('PodManager with mock BLE', () => {
   beforeEach(() => {
@@ -21,6 +21,23 @@ describe('PodManager with mock BLE', () => {
     const pod = await pending
     expect(pod.status).toBe('connected')
     expect(toHex(pod.authToken ?? new Uint8Array())).toBe('73 65 61 03 48 60 B6')
+    expect(pod.batteryPercent).toBe(90)
+  })
+
+  it('reads battery from GATT when advertisements only have auth bytes', async () => {
+    const transport = new MockBluetoothTransport({}, [
+      {
+        id: 'mock-auth-only',
+        name: 'BlazePod Mock',
+        manufacturerData: fromHex('01 DE AD BE EF'),
+        batteryPercent: 73,
+      },
+    ])
+    const manager = new PodManager(transport, { authHoldMs: 20 })
+    const pending = manager.connect()
+    await vi.advanceTimersByTimeAsync(20)
+    const pod = await pending
+    expect(pod.batteryPercent).toBe(73)
   })
 
   it('surfaces a Danish diagnostic when watchAdvertisements is missing', async () => {

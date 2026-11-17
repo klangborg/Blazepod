@@ -134,8 +134,9 @@ function stopLabel(exercise: Exercise): string {
 }
 
 function colorBar(colors: ColorName[]): string {
-  if (colors.length === 0) return 'var(--accent)'
-  if (colors.length === 1) return rgb(colors[0])
+  const first = colors[0]
+  if (!first) return 'var(--accent)'
+  if (colors.length === 1) return rgb(first)
   return `linear-gradient(180deg, ${colors.map(rgb).join(', ')})`
 }
 
